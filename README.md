@@ -129,8 +129,8 @@ Customize the proxy's behavior by editing the `.env` file created by `ccp init`.
 ```bash
 # .env file
 PREFERRED_PROVIDER="google"
-BIG_MODEL="gemini-2.5-pro-preview-03-25"
-SMALL_MODEL="gemini-2.0-flash"
+BIG_MODEL="gemini-2.5-pro"
+SMALL_MODEL="gemini-2.5-flash"
 ```
 
 The proxy automatically prefixes models with `openai/` or `gemini/` based on your `PREFERRED_PROVIDER`.
