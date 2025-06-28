@@ -68,7 +68,7 @@ graph TD
     ```bash
     ccp start
     ```
-    Your proxy is now running at `http://localhost:8082`.
+    Your proxy is now running at `http://localhost:PORT` (e.g., `http://localhost:8082` by default).
 
 ---
 
@@ -80,14 +80,17 @@ graph TD
     ```
 
 2.  **Connect to Your Proxy:**
-    Set the `ANTHROPIC_BASE_URL` environment variable to point to your local proxy.
+    The `ccp init` command (Step 3 in Quick Start) will offer to automatically add the `ANTHROPIC_BASE_URL` to your shell configuration file (`.zshrc` or `.bashrc`). **This is the recommended method.**
+
+    If you choose to set it manually, you can do so with the following command:
     ```bash
-    export ANTHROPIC_BASE_URL=http://localhost:8082
+    export ANTHROPIC_BASE_URL=http://localhost:PORT
     ```
-    *Tip: Add this line to your `.zshrc` or `.bashrc` file to make the setting permanent.*
+    (Replace `PORT` with the port you configured during `ccp init`.)
+    *Tip: If you set this manually, add the line to your `.zshrc` or `.bashrc` file to make the setting permanent.*
 
 3.  **Done!**
-    You can now use Claude Code as you normally would, and it will route requests through your configured backend model.
+    After restarting your shell (or running `source ~/.zshrc`), you can use Claude Code as you normally would, and it will route requests through your configured backend model.
     ```bash
     claude "Hello, world!"
     ```
@@ -116,6 +119,7 @@ Customize the proxy's behavior by editing the `.env` file created by `ccp init`.
 | :--- | :--- | :--- |
 | `OPENAI_API_KEY` | **(Required)** Your OpenAI API key. | - |
 | `GEMINI_API_KEY` | **(Required)** Your Google AI Studio (Gemini) API key. | - |
+| `PORT` | The port for the proxy server to run on. | `8082` |
 | `PREFERRED_PROVIDER`| The primary backend for mapping models (`openai` or `google`). | `openai` |
 | `BIG_MODEL` | The model to map `sonnet` requests to. | `gpt-4.1` |
 | `SMALL_MODEL` | The model to map `haiku` requests to. | `gpt-4.1-mini` |
