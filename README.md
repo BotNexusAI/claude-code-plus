@@ -1,144 +1,150 @@
-# Claude Code Plus 🚀
+# 🚀 Claude Code Plus: Use Any Model with Your Favorite Anthropic Tools
 
-**Use Anthropic clients (like Claude Code) with Gemini or OpenAI backends.** 🤝
+**Unlock the full potential of your development workflow. Use Anthropic clients like Claude Code with any backend model from OpenAI, Google, or other providers via LiteLLM.**
 
-This is a forked version of the original Anthropic API Proxy, now known as **Claude Code Plus**, with enhanced features for more flexible and powerful use. This proxy server lets you use Anthropic clients with Gemini or OpenAI models via LiteLLM. 🌉
+[![Test Suite](https://img.shields.io/badge/tests-passing-green.svg)](https://github.com/BotNexusAI/claude-code-plus)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
-![Claude Code Plus](pic.png)
+---
 
-## Key Features ✨
+## ✨ Why Use Claude Code Plus?
 
-*   **Advanced Model Mapping**: Automatically map Claude model names like `sonnet` and `haiku` to your preferred models from OpenAI (e.g., `gpt-4.1`) or Google (e.g., `gemini-2.5-pro-preview-03-25`).
-*   **Enhanced Tool Support**: Full support for tool usage, with automatic schema cleaning for compatibility with Gemini models.
-*   **Token Counting Endpoint**: A new `/v1/messages/count_tokens` endpoint to accurately count tokens for a given request.
-*   **Interactive CLI**: A powerful command-line interface to initialize your configuration, start the server, and view your current setup.
-*   **Robust Testing**: Includes a test suite to verify functionality.
+Claude Code Plus acts as a powerful translation layer, allowing you to:
 
-## How It Works 🧩
+- **Break Vendor Lock-in:** Use your favorite Anthropic-compatible clients (like the Claude Code CLI) with more powerful or cost-effective models from OpenAI, Google, and beyond.
+- **Access the Best Models:** Seamlessly switch to the latest models like GPT-4.1 or Gemini 2.5 Pro without changing your client-side workflow.
+- **Maintain Your Tools:** Keep using the development tools you love, while gaining the flexibility to choose your backend model.
+- **Full Tool Support:** Enhanced compatibility for tool usage, including automatic schema cleaning for Gemini models.
+- **Easy Setup:** Get started in minutes with an interactive command-line wizard.
 
-This proxy works by:
+---
 
-1.  **Receiving requests** in Anthropic's API format 📥
-2.  **Translating** the requests to the format of the target model (OpenAI or Gemini) via LiteLLM 🔄
-3.  **Sending** the translated request to the target API 📤
-4.  **Converting** the response back to Anthropic format 🔄
-5.  **Returning** the formatted response to the client ✅
+## 🧩 How It Works
 
-The proxy handles both streaming and non-streaming responses, maintaining compatibility with all Claude clients. 🌊
+The proxy server intercepts requests from your Anthropic client, translates them to the format of your chosen backend (e.g., OpenAI, Gemini), sends the request, and then translates the response back into the Anthropic format.
 
-## Quick Start ⚡
+```mermaid
+graph TD
+    A[Anthropic Client e.g., Claude Code] -- Anthropic API Request --> B{Claude Code Plus Proxy};
+    B -- Translated Request --> C[LiteLLM];
+    C -- Backend API Request --> D{OpenAI, Gemini, etc.};
+    D -- Backend API Response --> C;
+    C -- Translated Response --> B;
+    B -- Anthropic API Response --> A;
+
+    style B fill:#f9f,stroke:#333,stroke-width:2px
+```
+
+---
+
+## ⚡ Quick Start
 
 ### Prerequisites
-
-- **Python**: Version 3.10 or higher.
+- Python 3.10+
 
 ### Installation & Setup
 
-1.  **Clone the Repository**:
+1.  **Clone the Repository:**
     ```bash
-    git clone https://github.com/1rgs/claude-code-openai.git
-    cd claude-code-openai
+    git clone https://github.com/BotNexusAI/claude-code-plus.git
+    cd claude-code-plus
     ```
 
-2.  **Run the Initialization Wizard**:
-    Use the interactive CLI to set up your configuration. This command will:
-    - Prompt for your API keys (`OpenAI`, `Gemini`).
-    - Ask for your preferred model provider and mappings.
-    - Create a `.env` file to store your settings.
-    - Offer to configure your shell (`.zshrc` or `.bashrc`) to make the proxy available automatically.
-
+2.  **Install Dependencies:**
+    This will also make the `ccp` command available in your shell.
     ```bash
-    bash run.sh init
+    pip install -e .
     ```
 
-3.  **Start the Server**:
-    Once initialization is complete, start the proxy server. By default, it runs in the background.
-
+3.  **Run the Initialization Wizard:**
+    This interactive command sets up your API keys and model preferences in a `.env` file.
     ```bash
-    bash run.sh start
-    ```
-    The server will run at `http://localhost:8082`. Logs are written to `.ccp.log`.
-    
-    To view logs from the background server, use:
-    ```bash
-    bash run.sh logs
+    ccp init
     ```
 
-    To run the server in the foreground and see logs directly, use the `-f` flag:
+4.  **Start the Server:**
+    By default, the server runs in the background.
     ```bash
-    bash run.sh start -f
+    ccp start
     ```
+    Your proxy is now running at `http://localhost:8082`.
 
-### Using with Claude Code 🎮
+---
 
-1.  **Install Claude Code** (if you haven't already):
+## 🎮 Using with Claude Code
+
+1.  **Install Claude Code:**
     ```bash
     npm install -g @anthropic-ai/claude-code
     ```
 
-2.  **Connect to your proxy**:
-    Point your Claude client to the local proxy server by setting the `ANTHROPIC_BASE_URL` environment variable.
-
+2.  **Connect to Your Proxy:**
+    Set the `ANTHROPIC_BASE_URL` environment variable to point to your local proxy.
     ```bash
-    ANTHROPIC_BASE_URL=http://localhost:8082 claude
+    export ANTHROPIC_BASE_URL=http://localhost:8082
+    ```
+    *Tip: Add this line to your `.zshrc` or `.bashrc` file to make the setting permanent.*
+
+3.  **Done!**
+    You can now use Claude Code as you normally would, and it will route requests through your configured backend model.
+    ```bash
+    claude "Hello, world!"
     ```
 
-3.  **That's it!** Your Claude Code client will now communicate with your proxy, using the configured backend models. 🎯
+---
 
-## CLI Commands 💻
+## 💻 CLI Commands
 
-The `run.sh` script provides several commands to manage the proxy server:
+Manage the proxy with these simple commands:
 
 | Command | Description |
 | :--- | :--- |
-| `bash run.sh init` | Runs an interactive wizard to set up your API keys and model preferences. |
-| `bash run.sh start` | Starts the server in the background. Use `-f` or `--foreground` to run it in the foreground. |
-| `bash run.sh stop` | Stops the background server process. |
-| `bash run.sh logs` | Tails the log file (`.ccp.log`) to show real-time logs from the background server. |
-| `bash run.sh config`| Displays the current configuration from your `.env` file. |
+| `ccp init` | 🧙‍♂️ Run the interactive wizard to set up API keys and model preferences. |
+| `ccp start` | ▶️ Start the server. Use `-f` or `--foreground` to run in the foreground. |
+| `ccp stop` | ⏹️ Stop the background server process. |
+| `ccp logs` | 📄 Tail the log file (`.ccp.log`) for the background server. |
+| `ccp config`| ⚙️ Display the current configuration from your `.env` file. |
 
-## Configuration ⚙️
+---
 
-You can customize the proxy's behavior using environment variables, managed via the `bash run.sh init` command or by editing the `.env` file directly. Use `bash run.sh config` to view your current setup.
+## 🛠️ Configuration & Model Mapping
+
+Customize the proxy's behavior by editing the `.env` file created by `ccp init`.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `OPENAI_API_KEY` | **(Required)** Your OpenAI API key. | - |
 | `GEMINI_API_KEY` | **(Required)** Your Google AI Studio (Gemini) API key. | - |
-| `PREFERRED_PROVIDER` | The primary backend for mapping models. Can be `openai` or `google`. | `openai` |
+| `PREFERRED_PROVIDER`| The primary backend for mapping models (`openai` or `google`). | `openai` |
 | `BIG_MODEL` | The model to map `sonnet` requests to. | `gpt-4.1` |
 | `SMALL_MODEL` | The model to map `haiku` requests to. | `gpt-4.1-mini` |
-| `ANTHROPIC_API_KEY`| Your Anthropic API key. Only needed if you intend to proxy requests *to* Anthropic models. | - |
+| `ANTHROPIC_API_KEY`| Your Anthropic API key (only if proxying *to* Anthropic). | - |
 
 **Example: Prefer Google Models**
 ```bash
-export PREFERRED_PROVIDER="google"
-export BIG_MODEL="gemini-2.5-pro-preview-03-25"
-export SMALL_MODEL="gemini-2.0-flash"
+# .env file
+PREFERRED_PROVIDER="google"
+BIG_MODEL="gemini-2.5-pro-preview-03-25"
+SMALL_MODEL="gemini-2.0-flash"
 ```
 
-## Model Mapping 🗺️
+The proxy automatically prefixes models with `openai/` or `gemini/` based on your `PREFERRED_PROVIDER`.
 
-The proxy automatically maps standard Claude model names (`haiku`, `sonnet`) to the models you configure with the `BIG_MODEL` and `SMALL_MODEL` environment variables. It also adds the correct provider prefix (`openai/` or `gemini/`) based on your `PREFERRED_PROVIDER` setting.
+---
 
-### Supported Models
+## 🧪 Running Tests
 
-The proxy has a built-in list of known models for convenience. If you use one of these names for `BIG_MODEL` or `SMALL_MODEL`, the provider prefix will be added automatically.
-
-#### OpenAI Models
-- `o3-mini`, `o1`, `o1-mini`, `o1-pro`, `gpt-4.5-preview`, `gpt-4o`, `gpt-4o-audio-preview`, `chatgpt-4o-latest`, `gpt-4o-mini`, `gpt-4o-mini-audio-preview`, `gpt-4.1`, `gpt-4.1-mini`
-
-#### Gemini Models
-- `gemini-2.5-pro-preview-03-25`, `gemini-2.0-flash`
-
-## Running Tests 🧪
-
-This project includes a test suite to ensure everything is working as expected. To run the tests, first make sure you have set up your `.env` file using `bash run.sh init`. Then, run the following command:
+To run the test suite, first set up your `.env` file with `ccp init`, then run:
 
 ```bash
-python3 -m pytest
+pytest
 ```
 
-## Contributing 🤝
+---
 
-Contributions are welcome! Please feel free to submit a Pull Request. 🎁
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
