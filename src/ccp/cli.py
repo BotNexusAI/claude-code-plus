@@ -343,8 +343,42 @@ def main(ctx: typer.Context):
     """
     Main callback to display status if no command is given.
     """
+    check_anthropic_base_url_in_shell_config()
     if ctx.invoked_subcommand is None:
         status()
+
+def check_anthropic_base_url_in_shell_config():
+    """Checks shell config for ANTHROPIC_BASE_URL and informs the user of its status."""
+    shell = os.environ.get("SHELL", "")
+    rc_file = None
+    if "zsh" in shell:
+        rc_file = os.path.expanduser("~/.zshrc")
+    elif "bash" in shell:
+        rc_file = os.path.expanduser("~/.bashrc")
+
+    url_export = "export ANTHROPIC_BASE_URL=http://localhost:8082"
+
+    if rc_file and os.path.exists(rc_file):
+        try:
+            with open(rc_file, "r") as f:
+                content = f.read()
+                if url_export in content:
+                    print_info(f"Found '{url_export}' in your '{os.path.basename(rc_file)}' file. Your client should connect automatically.")
+                else:
+                    print_warning(
+                        f"'{url_export}' not found in your '{os.path.basename(rc_file)}' file.\n"
+                        "Your client may not connect to the proxy automatically.\n"
+                        "Run 'ccp init' to configure your shell, or use 'ANTHROPIC_BASE_URL=http://localhost:8082 claude'."
+                    )
+        except Exception as e:
+            # Fail silently, not critical enough to stop execution
+            print_error(f"Could not check shell config file: {e}")
+    else:
+        # If no rc file is found, it's likely the user needs to set it manually
+        print_warning(
+            f"Could not find a shell configuration file ({rc_file}).\n"
+            "Ensure 'export ANTHROPIC_BASE_URL=http://localhost:8082' is set in your environment to use the proxy."
+        )
 
 def status():
     """
