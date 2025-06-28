@@ -16,6 +16,7 @@ error_console = Console(stderr=True)
 # --- Constants ---
 PID_FILE = Path(os.getcwd()) / ".ccp.pid"
 LOG_FILE = Path(os.getcwd()) / ".ccp.log"
+DEFAULT_PORT = "8082"
 
 # --- Helper Functions ---
 def print_info(message):
@@ -115,8 +116,17 @@ def init():
     set_key(env_path, "SMALL_MODEL", small_model)
     print_success("Model configuration saved to .env file.")
 
+    # --- Port Configuration ---
+    console.print("\n[bold]3. Port Configuration[/bold]")
+    port = Prompt.ask(
+        "Enter the port for the server to run on",
+        default=get_key(env_path, "PORT") or DEFAULT_PORT
+    )
+    set_key(env_path, "PORT", port)
+    print_success(f"Server port saved to .env file.")
+
     # --- Shell Configuration ---
-    console.print("\n[bold]3. Shell Configuration[/bold]")
+    console.print("\n[bold]4. Shell Configuration[/bold]")
     if Confirm.ask("Add ANTHROPIC_BASE_URL to your shell startup file? (Recommended)"):
         shell = os.environ.get("SHELL", "")
         if "zsh" in shell:
@@ -127,7 +137,7 @@ def init():
             print_warning(f"Unsupported shell: {shell}. Please set ANTHROPIC_BASE_URL manually.")
             return
 
-        url_export = "export ANTHROPIC_BASE_URL=http://localhost:8082"
+        url_export = f"export ANTHROPIC_BASE_URL=http://localhost:{port}"
         if os.path.exists(rc_file) and url_export in open(rc_file).read():
             print_info(f"ANTHROPIC_BASE_URL is already set in {rc_file}.")
         else:
@@ -165,6 +175,9 @@ def start(
     if foreground and auto:
         print_error("The --foreground and --auto flags cannot be used together.")
         sys.exit(1)
+    
+    env_path = find_dotenv()
+    port = get_key(env_path, "PORT") or DEFAULT_PORT
 
     # Use the reliable check
     if is_server_really_running():
@@ -207,13 +220,13 @@ def start(
             "--host",
             "0.0.0.0",
             "--port",
-            "8082",
+            port,
         ]
 
         if foreground:
             print_info("Starting server in foreground...")
             print_info("Run the following command in a new terminal to connect your client:")
-            console.print("\n    [bold cyan]ANTHROPIC_BASE_URL=http://localhost:8082 claude[/bold cyan]\n")
+            console.print(f"\n    [bold cyan]ANTHROPIC_BASE_URL=http://localhost:{port} claude[/bold cyan]\n")
             try:
                 subprocess.run(command + ["--reload", "--reload-dir", "src"])
             except KeyboardInterrupt:
@@ -237,8 +250,8 @@ def start(
 
             print_success(f"Server started in background with PID: {process.pid}")
             print_info("Run the following command in a new terminal to connect your client:")
-            console.print("\n    [bold cyan]ANTHROPIC_BASE_URL=http://localhost:8082 claude[/bold cyan]\n")
-            print_info("Server is running at: http://localhost:8082")
+            console.print(f"\n    [bold cyan]ANTHROPIC_BASE_URL=http://localhost:{port} claude[/bold cyan]\n")
+            print_info(f"Server is running at: http://localhost:{port}")
             print_info(f"Logs are being written to: {LOG_FILE}")
             print_info("Use 'ccp logs' to view logs or 'ccp stop' to stop the server.")
 
@@ -262,7 +275,7 @@ def start(
 
         try:
             claude_env = os.environ.copy()
-            claude_env["ANTHROPIC_BASE_URL"] = "http://localhost:8082"
+            claude_env["ANTHROPIC_BASE_URL"] = f"http://localhost:{port}"
             subprocess.run(["claude"], env=claude_env, check=True)
         except KeyboardInterrupt:
             print_info("\nClaude Code client stopped by user.")
@@ -356,7 +369,9 @@ def check_anthropic_base_url_in_shell_config():
     elif "bash" in shell:
         rc_file = os.path.expanduser("~/.bashrc")
 
-    url_export = "export ANTHROPIC_BASE_URL=http://localhost:8082"
+    env_path = find_dotenv()
+    port = get_key(env_path, "PORT") or DEFAULT_PORT
+    url_export = f"export ANTHROPIC_BASE_URL=http://localhost:{port}"
 
     if rc_file and os.path.exists(rc_file):
         try:
@@ -366,18 +381,20 @@ def check_anthropic_base_url_in_shell_config():
                     print_info(f"Found '{url_export}' in your '{os.path.basename(rc_file)}' file. Your client should connect automatically.")
                 else:
                     print_warning(
-                        f"'{url_export}' not found in your '{os.path.basename(rc_file)}' file.\n"
-                        "Your client may not connect to the proxy automatically.\n"
-                        "Run 'ccp init' to configure your shell, or use 'ANTHROPIC_BASE_URL=http://localhost:8082 claude'."
+                        f"A different ANTHROPIC_BASE_URL setting was found or it is missing from your '{os.path.basename(rc_file)}' file.\n"
+                        "Your client may not connect to the correct proxy port automatically.\n"
+                        f"Run 'ccp init' to configure your shell, or use 'ANTHROPIC_BASE_URL=http://localhost:{port} claude'."
                     )
         except Exception as e:
             # Fail silently, not critical enough to stop execution
             print_error(f"Could not check shell config file: {e}")
     else:
         # If no rc file is found, it's likely the user needs to set it manually
+        env_path = find_dotenv()
+        port = get_key(env_path, "PORT") or DEFAULT_PORT
         print_warning(
             f"Could not find a shell configuration file ({rc_file}).\n"
-            "Ensure 'export ANTHROPIC_BASE_URL=http://localhost:8082' is set in your environment to use the proxy."
+            f"Ensure 'export ANTHROPIC_BASE_URL=http://localhost:{port}' is set in your environment to use the proxy."
         )
 
 def status():
@@ -391,8 +408,10 @@ def status():
     if is_server_really_running():
         with open(PID_FILE, "r") as f:
             pid = int(f.read().strip())
+        env_path = find_dotenv()
+        port = get_key(env_path, "PORT") or DEFAULT_PORT
         print_success(f"Running (PID: {pid})")
-        console.print(f"Address: http://localhost:8082")
+        console.print(f"Address: http://localhost:{port}")
         if LOG_FILE.exists():
             console.print(f"Log File: {LOG_FILE}")
     else:
