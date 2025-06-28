@@ -11,9 +11,11 @@ import signal
 
 app = typer.Typer(add_completion=False, invoke_without_command=True)
 console = Console()
+error_console = Console(stderr=True)
 
 # --- Constants ---
 PID_FILE = Path(os.getcwd()) / ".ccp.pid"
+LOG_FILE = Path(os.getcwd()) / ".ccp.log"
 
 # --- Helper Functions ---
 def print_info(message):
@@ -26,7 +28,7 @@ def print_warning(message):
     console.print(f"[bold yellow][WARNING][/bold yellow] {message}")
 
 def print_error(message):
-    console.print(f"[bold red][ERROR][/bold red] {message}", file=sys.stderr)
+    error_console.print(f"[bold red][ERROR][/bold red] {message}")
 
 def get_env_path():
     """Finds or creates a .env file path."""
@@ -38,6 +40,26 @@ def get_env_path():
             pass
         print_info(f"Created .env file at: {env_path}")
     return env_path
+
+def is_server_really_running():
+    """
+    Checks if the server is actually running by verifying the PID.
+    Cleans up stale PID files.
+    """
+    if not PID_FILE.exists():
+        return False
+    
+    try:
+        with open(PID_FILE, "r") as f:
+            pid = int(f.read().strip())
+        # Check if the process is actually running
+        os.kill(pid, 0)
+        return True # Process exists
+    except (ValueError, FileNotFoundError, ProcessLookupError):
+        # PID file is stale or corrupted
+        print_warning("Stale PID file found. Cleaning up.")
+        PID_FILE.unlink()
+        return False
 
 # --- CLI Commands ---
 
@@ -144,14 +166,14 @@ def start(
         print_error("The --foreground and --auto flags cannot be used together.")
         sys.exit(1)
 
-    server_is_running = PID_FILE.exists()
-
-    if server_is_running and not auto:
-        print_error(f"Server is already running. PID file found at: {PID_FILE}")
-        print_info("If the server is not running, delete the PID file and try again.")
-        sys.exit(1)
-
-    if not server_is_running:
+    # Use the reliable check
+    if is_server_really_running():
+        if not auto:
+            print_info("Server is already running. Displaying status:")
+            status()
+            sys.exit(0)
+        # If --auto is used, we'll just proceed to launch the client
+    else:
         # --- Environment and Dependency Setup ---
         venv_dir = ".venv"
         if not os.path.isdir(venv_dir):
@@ -204,24 +226,27 @@ def start(
         # Start server in background for --auto or default mode
         print_info("Starting server in background...")
         try:
-            process = subprocess.Popen(
-                command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
+            # Redirect stdout/stderr to a log file
+            with open(LOG_FILE, "wb") as log_file:
+                process = subprocess.Popen(
+                    command, stdout=log_file, stderr=log_file
+                )
+            
             with open(PID_FILE, "w") as f:
                 f.write(str(process.pid))
+
             print_success(f"Server started in background with PID: {process.pid}")
             print_info("Server is running at: http://localhost:8082")
-            print_info(f"PID file created at: {PID_FILE}")
-            print_info("Use 'ccp stop' to stop the server.")
+            print_info(f"Logs are being written to: {LOG_FILE}")
+            print_info("Use 'ccp logs' to view logs or 'ccp stop' to stop the server.")
+
         except Exception as e:
             print_error(f"Failed to start server in background: {e}")
             sys.exit(1)
 
     if auto:
-        if server_is_running:
-            print_info("Server is already running. Launching Claude Code client...")
-        else:
-            print_info("Server started. Launching Claude Code client...")
+        # A short pause is always good before launching the client
+        print_info("Launching Claude Code client...")
         
         import time
         import shutil
@@ -279,6 +304,31 @@ def stop():
         PID_FILE.unlink()
         print_success("Server stopped and PID file removed.")
 
+
+@app.command()
+def logs():
+    """
+    Follows the server logs from the background process.
+    """
+    console.rule("[bold]Server Logs[/bold]")
+    if not LOG_FILE.exists():
+        print_warning(f"Log file not found: {LOG_FILE}")
+        print_info("Start the server in the background first with 'ccp start'.")
+        sys.exit(1)
+
+    try:
+        print_info(f"Following logs from {LOG_FILE}. Press Ctrl+C to stop.")
+        subprocess.run(["tail", "-f", str(LOG_FILE)])
+    except FileNotFoundError:
+        print_error("The 'tail' command was not found. This feature is not available on your system.")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print_info("\nStopped following logs.")
+    except Exception as e:
+        print_error(f"An error occurred: {e}")
+        sys.exit(1)
+
+
 @app.command()
 def config():
     """
@@ -302,17 +352,13 @@ def status():
 
     # --- Server Status ---
     console.print("[bold]Server Status[/bold]")
-    if PID_FILE.exists():
-        try:
-            with open(PID_FILE, "r") as f:
-                pid = int(f.read().strip())
-            # Check if the process is actually running
-            os.kill(pid, 0)
-            print_success(f"Running (PID: {pid})")
-            console.print(f"Address: http://localhost:8082")
-        except (ValueError, FileNotFoundError, ProcessLookupError):
-            print_warning("Stopped (stale PID file found)")
-            PID_FILE.unlink() # Clean up stale file
+    if is_server_really_running():
+        with open(PID_FILE, "r") as f:
+            pid = int(f.read().strip())
+        print_success(f"Running (PID: {pid})")
+        console.print(f"Address: http://localhost:8082")
+        if LOG_FILE.exists():
+            console.print(f"Log File: {LOG_FILE}")
     else:
         print_info("Stopped")
 

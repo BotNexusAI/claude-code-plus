@@ -52,12 +52,22 @@ The proxy handles both streaming and non-streaming responses, maintaining compat
     ```
 
 3.  **Start the Server**:
-    Once initialization is complete, start the proxy server with a single command. This will handle creating a virtual environment, installing dependencies, and launching the server.
+    Once initialization is complete, start the proxy server. By default, it runs in the background.
 
     ```bash
     bash run.sh start
     ```
-    The server will be running at `http://localhost:8082`.
+    The server will run at `http://localhost:8082`. Logs are written to `.ccp.log`.
+    
+    To view logs from the background server, use:
+    ```bash
+    bash run.sh logs
+    ```
+
+    To run the server in the foreground and see logs directly, use the `-f` flag:
+    ```bash
+    bash run.sh start -f
+    ```
 
 ### Using with Claude Code 🎮
 
@@ -74,6 +84,18 @@ The proxy handles both streaming and non-streaming responses, maintaining compat
     ```
 
 3.  **That's it!** Your Claude Code client will now communicate with your proxy, using the configured backend models. 🎯
+
+## CLI Commands 💻
+
+The `run.sh` script provides several commands to manage the proxy server:
+
+| Command | Description |
+| :--- | :--- |
+| `bash run.sh init` | Runs an interactive wizard to set up your API keys and model preferences. |
+| `bash run.sh start` | Starts the server in the background. Use `-f` or `--foreground` to run it in the foreground. |
+| `bash run.sh stop` | Stops the background server process. |
+| `bash run.sh logs` | Tails the log file (`.ccp.log`) to show real-time logs from the background server. |
+| `bash run.sh config`| Displays the current configuration from your `.env` file. |
 
 ## Configuration ⚙️
 

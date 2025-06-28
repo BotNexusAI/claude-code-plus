@@ -20,8 +20,9 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN,  # Change to INFO level to show more details
+    level=logging.INFO,  # Default to INFO for more detailed logs
     format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout, # Ensure logs go to stdout by default
 )
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,7 @@ class MessagesRequest(BaseModel):
         mapped = False
         # Map Haiku to SMALL_MODEL based on provider preference
         if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             else:
@@ -224,7 +225,7 @@ class MessagesRequest(BaseModel):
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
@@ -288,7 +289,7 @@ class TokenCountRequest(BaseModel):
         mapped = False
         # Map Haiku to SMALL_MODEL based on provider preference
         if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             else:
@@ -297,7 +298,7 @@ class TokenCountRequest(BaseModel):
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
@@ -1426,7 +1427,7 @@ async def count_tokens(
 
 @app.get("/")
 async def root():
-    return {"message": "Anthropic Proxy for LiteLLM"}
+    return {"message": "Claude Code Plus: An Anthropic client proxy for OpenAI & Gemini models."}
 
 # Define ANSI color codes for terminal output
 class Colors:
