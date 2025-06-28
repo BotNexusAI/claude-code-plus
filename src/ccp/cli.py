@@ -351,6 +351,37 @@ def config():
     """
     status()
 
+@app.command(name="mcp")
+def mcp_mode():
+    """
+    Runs the project in MCP server mode.
+    """
+    console.rule("[bold]Starting MCP Server Mode[/bold]")
+    print_info("The server will run in the foreground, exposing its tools via stdio.")
+    print_info("Connect your MCP client to this process.")
+    
+    try:
+        # Construct the path to the mcp_server.py script
+        script_path = Path(__file__).parent / "mcp_server.py"
+        
+        # Use the Python executable from the current environment
+        python_executable = sys.executable
+        
+        # Run the MCP server script
+        subprocess.run([python_executable, str(script_path)], check=True)
+        
+    except FileNotFoundError:
+        print_error(f"Could not find the mcp_server.py script.")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print_error(f"MCP server exited with an error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print_info("\nMCP server stopped by user.")
+    except Exception as e:
+        print_error(f"An unexpected error occurred: {e}")
+        sys.exit(1)
+
 @app.callback()
 def main(ctx: typer.Context):
     """
