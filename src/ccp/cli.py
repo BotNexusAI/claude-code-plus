@@ -9,7 +9,7 @@ from typing_extensions import Annotated
 from pathlib import Path
 import signal
 
-app = typer.Typer()
+app = typer.Typer(add_completion=False, invoke_without_command=True)
 console = Console()
 
 # --- Constants ---
@@ -210,6 +210,7 @@ def start(
             with open(PID_FILE, "w") as f:
                 f.write(str(process.pid))
             print_success(f"Server started in background with PID: {process.pid}")
+            print_info("Server is running at: http://localhost:8082")
             print_info(f"PID file created at: {PID_FILE}")
             print_info("Use 'ccp stop' to stop the server.")
         except Exception as e:
@@ -283,14 +284,52 @@ def config():
     """
     Displays the current configuration from the .env file, with sensitive keys masked.
     """
-    console.rule("[bold]Current Configuration[/bold]")
+    status()
+
+@app.callback()
+def main(ctx: typer.Context):
+    """
+    Main callback to display status if no command is given.
+    """
+    if ctx.invoked_subcommand is None:
+        status()
+
+def status():
+    """
+    Displays the server status and current configuration.
+    """
+    console.rule("[bold]Claude Code Plus Status[/bold]")
+
+    # --- Server Status ---
+    console.print("[bold]Server Status[/bold]")
+    if PID_FILE.exists():
+        try:
+            with open(PID_FILE, "r") as f:
+                pid = int(f.read().strip())
+            # Check if the process is actually running
+            os.kill(pid, 0)
+            print_success(f"Running (PID: {pid})")
+            console.print(f"Address: http://localhost:8082")
+        except (ValueError, FileNotFoundError, ProcessLookupError):
+            print_warning("Stopped (stale PID file found)")
+            PID_FILE.unlink() # Clean up stale file
+    else:
+        print_info("Stopped")
+
+    # --- Configuration ---
+    console.print("\n[bold]Configuration[/bold]")
     env_path = find_dotenv()
-    if not env_path:
-        print_warning("No .env file found. Run 'python cli.py init' to create one.")
+    if not env_path or not os.path.exists(env_path):
+        print_warning("No .env file found. Run 'ccp init' to create one.")
         return
 
     with open(env_path) as f:
-        for line in f:
+        lines = f.readlines()
+        if not lines:
+            print_warning("'.env' file is empty. Run 'ccp init' to configure.")
+            return
+            
+        for line in lines:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
@@ -298,12 +337,13 @@ def config():
             try:
                 key, value = line.split('=', 1)
                 if "API_KEY" in key and len(value) > 8:
-                    masked_value = f"{value[:4]}...{value[-4:]}"
+                    masked_value = f"'{value[:4]}...{value[-4:]}'"
                     console.print(f"{key}={masked_value}")
                 else:
                     console.print(line)
             except ValueError:
                 console.print(line)
+
 
 if __name__ == "__main__":
     app()
