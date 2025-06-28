@@ -236,6 +236,8 @@ def start(
                 f.write(str(process.pid))
 
             print_success(f"Server started in background with PID: {process.pid}")
+            print_info("Run the following command in a new terminal to connect your client:")
+            console.print("\n    [bold cyan]ANTHROPIC_BASE_URL=http://localhost:8082 claude[/bold cyan]\n")
             print_info("Server is running at: http://localhost:8082")
             print_info(f"Logs are being written to: {LOG_FILE}")
             print_info("Use 'ccp logs' to view logs or 'ccp stop' to stop the server.")
