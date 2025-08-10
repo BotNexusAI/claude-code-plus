@@ -131,7 +131,8 @@ def clean_gemini_schema(schema: Any) -> Any:
 
         # Check for unsupported 'format' in string types
         if schema.get("type") == "string" and "format" in schema:
-            allowed_formats = {"enum", "date-time"}
+            # Gemini tool schemas are strict; only allow date-time if present, otherwise drop format
+            allowed_formats = {"date-time"}
             if schema["format"] not in allowed_formats:
                 logger.debug(f"Removing unsupported format '{schema['format']}' for string type in Gemini schema.")
                 schema.pop("format")
@@ -438,109 +439,83 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     # Add conversation messages
     for idx, msg in enumerate(anthropic_request.messages):
         content = msg.content
+        role = msg.role
+
+        # Simple string content
         if isinstance(content, str):
-            messages.append({"role": msg.role, "content": content})
+            messages.append({"role": role, "content": content})
+            continue
+
+        # Content is a list of blocks - classify into text/tool_use/tool_result
+        text_parts: List[str] = []
+        tool_uses: List[Dict[str, Any]] = []
+        tool_results: List[Dict[str, Any]] = []
+
+        for block in content:
+            b_type = None
+            if hasattr(block, "type"):
+                b_type = block.type
+            elif isinstance(block, dict):
+                b_type = block.get("type")
+
+            if b_type == "text":
+                text = block.text if hasattr(block, "text") else (block.get("text", "") if isinstance(block, dict) else "")
+                if text:
+                    text_parts.append(text)
+            elif b_type == "image":
+                # Minimal fallback for image in text-only backends
+                text_parts.append("[Image content omitted]")
+            elif b_type == "tool_use":
+                # Convert Anthropic tool_use into OpenAI-style tool_calls on assistant message
+                tool_id = getattr(block, "id", None) if hasattr(block, "id") else (block.get("id") if isinstance(block, dict) else None)
+                name = getattr(block, "name", None) if hasattr(block, "name") else (block.get("name") if isinstance(block, dict) else None)
+                input_obj = getattr(block, "input", None) if hasattr(block, "input") else (block.get("input") if isinstance(block, dict) else {})
+                try:
+                    arguments_str = input_obj if isinstance(input_obj, str) else json.dumps(input_obj)
+                except Exception:
+                    arguments_str = str(input_obj)
+                tool_uses.append({
+                    "id": tool_id or f"tool_{uuid.uuid4()}",
+                    "type": "function",
+                    "function": {
+                        "name": name or "",
+                        "arguments": arguments_str or "{}"
+                    }
+                })
+            elif b_type == "tool_result":
+                # Convert Anthropic tool_result into OpenAI role=tool messages
+                tool_use_id = getattr(block, "tool_use_id", None) if hasattr(block, "tool_use_id") else (block.get("tool_use_id") if isinstance(block, dict) else "")
+                # Normalize result content to a string
+                result_content = getattr(block, "content", None) if hasattr(block, "content") else (block.get("content") if isinstance(block, dict) else None)
+                normalized = parse_tool_result_content(result_content)
+                tool_results.append({
+                    "tool_call_id": tool_use_id or "",
+                    "content": normalized
+                })
+
+        if role == "assistant":
+            # Assistant message with potential tool_calls
+            msg_dict: Dict[str, Any] = {"role": "assistant"}
+            text_joined = "\n".join([t for t in text_parts if t]).strip()
+            msg_dict["content"] = text_joined if text_joined else None
+            if tool_uses:
+                msg_dict["tool_calls"] = tool_uses
+            messages.append(msg_dict)
+        elif role == "user":
+            # Emit user text (if any) and then any tool results as role=tool messages
+            text_joined = "\n".join([t for t in text_parts if t]).strip()
+            if text_joined:
+                messages.append({"role": "user", "content": text_joined})
+            for tr in tool_results:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tr["tool_call_id"],
+                    "content": tr["content"]
+                })
         else:
-            # Special handling for tool_result in user messages
-            # OpenAI/LiteLLM format expects the assistant to call the tool, 
-            # and the user's next message to include the result as plain text
-            if msg.role == "user" and any(block.type == "tool_result" for block in content if hasattr(block, "type")):
-                # For user messages with tool_result, split into separate messages
-                text_content = ""
-                
-                # Extract all text parts and concatenate them
-                for block in content:
-                    if hasattr(block, "type"):
-                        if block.type == "text":
-                            text_content += block.text + "\n"
-                        elif block.type == "tool_result":
-                            # Add tool result as a message by itself - simulate the normal flow
-                            tool_id = block.tool_use_id if hasattr(block, "tool_use_id") else ""
-                            
-                            # Handle different formats of tool result content
-                            result_content = ""
-                            if hasattr(block, "content"):
-                                if isinstance(block.content, str):
-                                    result_content = block.content
-                                elif isinstance(block.content, list):
-                                    # If content is a list of blocks, extract text from each
-                                    for content_block in block.content:
-                                        if hasattr(content_block, "type") and content_block.type == "text":
-                                            result_content += content_block.text + "\n"
-                                        elif isinstance(content_block, dict) and content_block.get("type") == "text":
-                                            result_content += content_block.get("text", "") + "\n"
-                                        elif isinstance(content_block, dict):
-                                            # Handle any dict by trying to extract text or convert to JSON
-                                            if "text" in content_block:
-                                                result_content += content_block.get("text", "") + "\n"
-                                            else:
-                                                try:
-                                                    result_content += json.dumps(content_block) + "\n"
-                                                except:
-                                                    result_content += str(content_block) + "\n"
-                                elif isinstance(block.content, dict):
-                                    # Handle dictionary content
-                                    if block.content.get("type") == "text":
-                                        result_content = block.content.get("text", "")
-                                    else:
-                                        try:
-                                            result_content = json.dumps(block.content)
-                                        except:
-                                            result_content = str(block.content)
-                                else:
-                                    # Handle any other type by converting to string
-                                    try:
-                                        result_content = str(block.content)
-                                    except:
-                                        result_content = "Unparseable content"
-                            
-                            # In OpenAI format, tool results come from the user (rather than being content blocks)
-                            text_content += f"Tool result for {tool_id}:\n{result_content}\n"
-                
-                # Add as a single user message with all the content
-                messages.append({"role": "user", "content": text_content.strip()})
-            else:
-                # Regular handling for other message types
-                processed_content = []
-                for block in content:
-                    if hasattr(block, "type"):
-                        if block.type == "text":
-                            processed_content.append({"type": "text", "text": block.text})
-                        elif block.type == "image":
-                            processed_content.append({"type": "image", "source": block.source})
-                        elif block.type == "tool_use":
-                            # Handle tool use blocks if needed
-                            processed_content.append({
-                                "type": "tool_use",
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input
-                            })
-                        elif block.type == "tool_result":
-                            # Handle different formats of tool result content
-                            processed_content_block = {
-                                "type": "tool_result",
-                                "tool_use_id": block.tool_use_id if hasattr(block, "tool_use_id") else ""
-                            }
-                            
-                            # Process the content field properly
-                            if hasattr(block, "content"):
-                                if isinstance(block.content, str):
-                                    # If it's a simple string, create a text block for it
-                                    processed_content_block["content"] = [{"type": "text", "text": block.content}]
-                                elif isinstance(block.content, list):
-                                    # If it's already a list of blocks, keep it
-                                    processed_content_block["content"] = block.content
-                                else:
-                                    # Default fallback
-                                    processed_content_block["content"] = [{"type": "text", "text": str(block.content)}]
-                            else:
-                                # Default empty content
-                                processed_content_block["content"] = [{"type": "text", "text": ""}]
-                                
-                            processed_content.append(processed_content_block)
-                
-                messages.append({"role": msg.role, "content": processed_content})
+            # Fallback for any other roles - flatten to text
+            text_joined = "\n".join([t for t in text_parts if t]).strip()
+            messages.append({"role": role, "content": text_joined or "..."})
     
     # Cap max_tokens for OpenAI models to their limit of 16384
     max_tokens = anthropic_request.max_tokens
@@ -615,7 +590,8 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         if choice_type == "auto":
             litellm_request["tool_choice"] = "auto"
         elif choice_type == "any":
-            litellm_request["tool_choice"] = "any"
+            # OpenAI/Gemini expect "auto" or a specific function; map Anthropic "any" -> "auto"
+            litellm_request["tool_choice"] = "auto"
         elif choice_type == "tool" and "name" in tool_choice_dict:
             litellm_request["tool_choice"] = {
                 "type": "function",
@@ -685,18 +661,18 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         # Add text content block if present (text might be None or empty for pure tool call responses)
         if content_text is not None and content_text != "":
             content.append({"type": "text", "text": content_text})
-        
-        # Add tool calls if present (tool_use in Anthropic format) - only for Claude models
-        if tool_calls and is_claude_model:
+
+        # Always translate tool_calls into Anthropic tool_use blocks for the client
+        if tool_calls:
             logger.debug(f"Processing tool calls: {tool_calls}")
-            
-            # Convert to list if it's not already
+
+            # Ensure list
             if not isinstance(tool_calls, list):
                 tool_calls = [tool_calls]
-                
+
             for idx, tool_call in enumerate(tool_calls):
                 logger.debug(f"Processing tool call {idx}: {tool_call}")
-                
+
                 # Extract function data based on whether it's a dict or object
                 if isinstance(tool_call, dict):
                     function = tool_call.get("function", {})
@@ -708,64 +684,23 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
                     tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
                     name = getattr(function, "name", "") if function else ""
                     arguments = getattr(function, "arguments", "{}") if function else "{}"
-                
-                # Convert string arguments to dict if needed
+
+                # Convert string arguments to dict if possible
                 if isinstance(arguments, str):
                     try:
                         arguments = json.loads(arguments)
                     except json.JSONDecodeError:
                         logger.warning(f"Failed to parse tool arguments as JSON: {arguments}")
                         arguments = {"raw": arguments}
-                
+
                 logger.debug(f"Adding tool_use block: id={tool_id}, name={name}, input={arguments}")
-                
+
                 content.append({
                     "type": "tool_use",
                     "id": tool_id,
                     "name": name,
                     "input": arguments
                 })
-        elif tool_calls and not is_claude_model:
-            # For non-Claude models, convert tool calls to text format
-            logger.debug(f"Converting tool calls to text for non-Claude model: {clean_model}")
-            
-            # We'll append tool info to the text content
-            tool_text = "\n\nTool usage:\n"
-            
-            # Convert to list if it's not already
-            if not isinstance(tool_calls, list):
-                tool_calls = [tool_calls]
-                
-            for idx, tool_call in enumerate(tool_calls):
-                # Extract function data based on whether it's a dict or object
-                if isinstance(tool_call, dict):
-                    function = tool_call.get("function", {})
-                    tool_id = tool_call.get("id", f"tool_{uuid.uuid4()}")
-                    name = function.get("name", "")
-                    arguments = function.get("arguments", "{}")
-                else:
-                    function = getattr(tool_call, "function", None)
-                    tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
-                    name = getattr(function, "name", "") if function else ""
-                    arguments = getattr(function, "arguments", "{}") if function else "{}"
-                
-                # Convert string arguments to dict if needed
-                if isinstance(arguments, str):
-                    try:
-                        args_dict = json.loads(arguments)
-                        arguments_str = json.dumps(args_dict, indent=2)
-                    except json.JSONDecodeError:
-                        arguments_str = arguments
-                else:
-                    arguments_str = json.dumps(arguments, indent=2)
-                
-                tool_text += f"Tool: {name}\nArguments: {arguments_str}\n\n"
-            
-            # Add or append tool text to content
-            if content and content[0]["type"] == "text":
-                content[0]["text"] += tool_text
-            else:
-                content.append({"type": "text", "text": tool_text})
         
         # Get usage information - extract values safely from object or dict
         if isinstance(usage_info, dict):
