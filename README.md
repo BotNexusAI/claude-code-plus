@@ -1,6 +1,6 @@
 # 🚀 Claude Code Plus: Use Any Model with Your Favorite Anthropic Tools
 
-**Unlock the full potential of your development workflow. Use Anthropic clients like Claude Code with any backend model from OpenAI, Google, or other providers via LiteLLM.**
+**Unlock the full potential of your development workflow. Use Anthropic clients like Claude Code with any backend model from OpenAI, Google, or Anthropic using direct API integrations (no LiteLLM dependency).**
 
 [![Test Suite](https://img.shields.io/badge/tests-passing-green.svg)](https://github.com/BotNexusAI/claude-code-plus)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -10,11 +10,12 @@
 
 ## ✨ Why Use Claude Code Plus?
 
-Claude Code Plus acts as a powerful translation layer, allowing you to:
+Claude Code Plus acts as a high-performance, modular translation proxy, allowing you to:
 
-- **Break Vendor Lock-in:** Use your favorite Anthropic-compatible clients (like the Claude Code CLI) with more powerful or cost-effective models from OpenAI, Google, and beyond.
-- **Access the Best Models:** Seamlessly switch to the latest models like GPT-4.1 or Gemini 2.5 Pro without changing your client-side workflow.
-- **Maintain Your Tools:** Keep using the development tools you love, while gaining the flexibility to choose your backend model.
+- **Break Vendor Lock-in:** Use your favorite Anthropic-compatible clients (like the Claude Code CLI) with more powerful or cost-effective models from OpenAI, Google, and Anthropic.
+- **Access the Best Models:** Seamlessly switch to the latest models like GPT-4.1, Gemini 2.5 Pro, or Claude 3.5 Sonnet without changing your client-side workflow.
+- **Native Performance:** Direct API integrations eliminate middleware overhead for faster responses and native streaming.
+- **Modular Architecture:** Clean, maintainable codebase with separated concerns for each provider.
 - **Full Tool Support:** Enhanced compatibility for tool usage, including automatic schema cleaning for Gemini models.
 - **Easy Setup:** Get started in minutes with an interactive command-line wizard.
 
@@ -22,19 +23,30 @@ Claude Code Plus acts as a powerful translation layer, allowing you to:
 
 ## 🧩 How It Works
 
-The proxy server intercepts requests from your Anthropic client, translates them to the format of your chosen backend (e.g., OpenAI, Gemini), sends the request, and then translates the response back into the Anthropic format.
+The modular proxy server intercepts requests from your Anthropic client, routes them to specialized handlers for direct API communication, and translates responses back into the Anthropic format.
 
 ```mermaid
 graph TD
     A[Anthropic Client e.g., Claude Code] -- Anthropic API Request --> B{Claude Code Plus Proxy};
-    B -- Translated Request --> C[LiteLLM];
-    C -- Backend API Request --> D{OpenAI, Gemini, etc.};
-    D -- Backend API Response --> C;
-    C -- Translated Response --> B;
+    B -- Gemini Request --> C[Google GenAI SDK];
+    B -- OpenAI Request --> D[OpenAI API];
+    B -- Anthropic Request --> E[Anthropic API];
+    C -- Gemini Response --> B;
+    D -- OpenAI Response --> B;
+    E -- Anthropic Response --> B;
     B -- Anthropic API Response --> A;
 
     style B fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#4285f4,stroke:#333,stroke-width:2px
+    style D fill:#00d4aa,stroke:#333,stroke-width:2px
+    style E fill:#d97706,stroke:#333,stroke-width:2px
 ```
+
+### 🏗️ **Architecture Highlights**
+- **Direct APIs:** No middleware dependencies - direct communication with each provider
+- **Modular Design:** Separate handlers for Gemini, OpenAI, and Anthropic
+- **Provider-Specific Optimizations:** Each handler leverages native API features
+- **Unified Interface:** All providers appear as Anthropic-compatible endpoints
 
 ---
 
@@ -133,7 +145,7 @@ BIG_MODEL="gemini-2.5-pro"
 SMALL_MODEL="gemini-2.5-flash"
 ```
 
-The proxy automatically prefixes models with `openai/` or `gemini/` based on your `PREFERRED_PROVIDER`.
+The proxy automatically prefixes models with `openai/`, `gemini/`, or `anthropic/` based on your `PREFERRED_PROVIDER`.
 
 ---
 

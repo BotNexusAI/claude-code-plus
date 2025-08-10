@@ -1,86 +1,153 @@
-# Architecture: Mapping Anthropic to Gemini/OpenAI
+# Architecture: Direct API Integration (No LiteLLM)
 
-This document outlines the architecture of the Claude Code Plus proxy, explaining how it translates requests and responses between an Anthropic-compatible client (like Claude Code) and a backend model provider (like Google Gemini or OpenAI) via LiteLLM.
+This document outlines the new modular architecture of the Claude Code Plus proxy, explaining how it directly translates requests and responses between an Anthropic-compatible client (like Claude Code) and backend model providers (Google Gemini, OpenAI, and Anthropic) using native APIs.
 
 ## 1. Overall Architecture
 
-The proxy server acts as a middleware that intercepts API requests from the Anthropic client. It performs a series of transformations to make them compatible with the target backend model and then translates the backend's response back into the format the Anthropic client expects.
+The proxy server acts as a modular middleware that intercepts API requests from the Anthropic client. It routes requests to specialized handlers that communicate directly with each provider's native API, then translates responses back into the format the Anthropic client expects.
 
 ```mermaid
 graph TD
     A[Anthropic Client e.g., Claude Code] -- Anthropic API Request --> B{Claude Code Plus Proxy};
-    B -- Translated Request --> C[LiteLLM];
-    C -- Backend API Request --> D{OpenAI, Gemini, etc.};
-    D -- Backend API Response --> C;
-    C -- Translated Response --> B;
+    B -- Gemini Request --> C[Google GenAI SDK];
+    B -- OpenAI Request --> D[OpenAI API];
+    B -- Anthropic Request --> E[Anthropic API];
+    C -- Gemini Response --> B;
+    D -- OpenAI Response --> B;
+    E -- Anthropic Response --> B;
     B -- Anthropic API Response --> A;
 
     style B fill:#f9f,stroke:#333,stroke-width:2px
+    style C fill:#4285f4,stroke:#333,stroke-width:2px
+    style D fill:#00d4aa,stroke:#333,stroke-width:2px
+    style E fill:#d97706,stroke:#333,stroke-width:2px
 ```
 
-The key components are:
-- **FastAPI Server (`src/ccp/server.py`):** The core of the proxy. It exposes a `/v1/messages` endpoint that mimics Anthropic's API.
-- **Pydantic Models:** Used for request validation and data manipulation. The `MessagesRequest` model is central to this process.
-- **LiteLLM:** The translation layer that handles communication with various backend model APIs (OpenAI, Gemini, etc.).
-- **Conversion Functions:**
-    - `convert_anthropic_to_litellm`: Translates the incoming Anthropic request format to the OpenAI format that LiteLLM expects.
-    - `convert_litellm_to_anthropic`: Translates the backend model's response back into the Anthropic format.
+## 2. Modular Structure
 
-## 2. Request Lifecycle & Model Mapping
+The new architecture is organized into focused modules:
+
+### Core Components
+- **`src/ccp/server.py`:** Main FastAPI application with request routing logic
+- **`src/ccp/models.py`:** Pydantic models for request/response validation
+- **`src/ccp/config.py`:** Configuration management and API client initialization
+- **`src/ccp/utils.py`:** Shared utilities, logging, and helper functions
+
+### Provider Handlers
+- **`src/ccp/handlers/gemini.py`:** Direct Google GenAI SDK integration
+- **`src/ccp/handlers/openai.py`:** Direct OpenAI API calls via httpx
+- **`src/ccp/handlers/anthropic.py`:** Direct Anthropic API calls
+
+### Format Conversions
+- **`src/ccp/conversions/genai.py`:** Anthropic ↔ Google GenAI format translation
+- **`src/ccp/conversions/openai.py`:** Anthropic ↔ OpenAI format translation
+- **`src/ccp/conversions/anthropic.py`:** Anthropic format validation/passthrough
+
+### Streaming Support
+- **`src/ccp/streaming/gemini.py`:** Google GenAI streaming to Anthropic SSE
+- **`src/ccp/streaming/openai.py`:** OpenAI streaming to Anthropic SSE
+- **`src/ccp/streaming/anthropic.py`:** Anthropic streaming passthrough
+
+## 3. Request Lifecycle & Model Mapping
 
 The process begins when the proxy receives a request at the `/v1/messages` endpoint.
 
-1.  **Request Validation:** The incoming JSON request is parsed and validated by the `MessagesRequest` Pydantic model.
-2.  **Model Mapping:** The `model` field in the request undergoes a critical transformation within a `field_validator`:
-    - It checks the requested model name (e.g., `claude-3-haiku-20240307`).
-    - Based on the `PREFERRED_PROVIDER` setting in your `.env` file, it maps "haiku" and "sonnet" models to the `SMALL_MODEL` and `BIG_MODEL` variables, respectively.
-    - For example, if `PREFERRED_PROVIDER` is "google" and `BIG_MODEL` is "gemini-1.5-pro-latest", a request for "sonnet" will be mapped to `gemini/gemini-1.5-pro-latest`.
-    - The validator automatically adds the correct provider prefix (`openai/` or `gemini/`) for LiteLLM.
-    - This logic is defined in the `validate_model_field` validator within the [`MessagesRequest`](src/ccp/server.py:201) model.
+1.  **Request Validation:** The incoming JSON request is parsed and validated by the `MessagesRequest` Pydantic model in `src/ccp/models.py`.
+2.  **Model Mapping:** The `model` field undergoes transformation within the `validate_model_field` validator:
+    - Maps "haiku" and "sonnet" models to `SMALL_MODEL` and `BIG_MODEL` based on `PREFERRED_PROVIDER`
+    - Automatically adds provider prefixes (`openai/`, `gemini/`, `anthropic/`)
+    - Example: `claude-3-sonnet` → `gemini/gemini-2.0-flash` (if Google is preferred)
+3.  **Request Routing:** The main server routes requests based on model prefixes:
+    - `gemini/*` → `handle_gemini_request()` in `handlers/gemini.py`
+    - `openai/*` → `handle_openai_request()` in `handlers/openai.py`
+    - `anthropic/*` → `handle_anthropic_request()` in `handlers/anthropic.py`
+4.  **Format Conversion:** Each handler uses provider-specific conversion functions to translate the request format.
 
-## 3. Tool Call Translation: Anthropic to Backend
+## 4. Provider-Specific Handling
 
-This is a crucial step for enabling tool use with non-Anthropic models. The translation is handled by the [`convert_anthropic_to_litellm`](src/ccp/server.py:413) function.
+### Google Gemini (via GenAI SDK)
+- **Handler:** `src/ccp/handlers/gemini.py`
+- **Conversion:** `src/ccp/conversions/genai.py`
+- **Features:**
+  - Direct Google GenAI SDK integration
+  - Automatic schema cleaning for tool definitions
+  - Native streaming support
+  - System prompt handling via content prepending
 
-1.  **Tool Conversion:** The `tools` array in the Anthropic request, which contains tool definitions with an `input_schema`, is converted into the OpenAI-compatible format. Each tool becomes a dictionary with `type: "function"` and a `function` object containing the name, description, and parameters.
+### OpenAI (Direct API)
+- **Handler:** `src/ccp/handlers/openai.py`
+- **Conversion:** `src/ccp/conversions/openai.py`
+- **Features:**
+  - Direct API calls via httpx
+  - Streaming via Server-Sent Events
+  - Full tool calling support
+  - Native OpenAI format compatibility
 
-2.  **Gemini Schema Cleaning:** Google's Gemini models have stricter requirements for their tool schemas than OpenAI or Anthropic. To ensure compatibility, a special cleaning function, [`clean_gemini_schema`](src/ccp/server.py:125), is invoked if the target model is a Gemini model. This function recursively traverses the `input_schema` and:
-    - Removes unsupported fields like `additionalProperties` and `default`.
-    - Removes unsupported `format` values from string types (e.g., `uuid`), which would otherwise cause errors.
+### Anthropic (Direct API)
+- **Handler:** `src/ccp/handlers/anthropic.py`
+- **Conversion:** `src/ccp/conversions/anthropic.py`
+- **Features:**
+  - Direct Anthropic API calls
+  - Minimal format translation (mostly passthrough)
+  - Native streaming support
+  - Full feature compatibility
 
-3.  **Tool Choice:** The `tool_choice` parameter is also translated from Anthropic's format (e.g., `{type: "tool", name: "my_tool"}`) to the format expected by the backend (e.g., `{type: "function", function: {name: "my_tool"}}`).
+## 5. Tool Call Translation
 
-## 4. Tool Call Translation: Backend to Anthropic
+Tool calling is handled by provider-specific conversion functions:
 
-After the backend model returns a response, the [`convert_litellm_to_anthropic`](src/ccp/server.py:630) function translates it back.
+### Anthropic → Backend
+- **OpenAI:** Converts `tools` array with `input_schema` to OpenAI `function` format
+- **Gemini:** Uses GenAI SDK's `types.FunctionDeclaration` with automatic schema cleaning
+- **Anthropic:** Direct passthrough with validation
 
-1.  **Tool Call Detection:** The function checks the response for a `tool_calls` field, which is how OpenAI and Gemini indicate that the model wants to use a tool.
+### Backend → Anthropic
+- **OpenAI:** Converts `tool_calls` array to Anthropic `tool_use` content blocks
+- **Gemini:** Converts `function_call` parts to Anthropic `tool_use` format
+- **Anthropic:** Direct passthrough
 
-2.  **Response Conversion:** Each item in the `tool_calls` array is converted into an Anthropic `tool_use` content block.
-    - The `id` from the backend tool call is preserved.
-    - The `function.name` becomes the `name` of the tool.
-    - The `function.arguments` (which is a JSON string) is parsed into a dictionary and becomes the `input` for the tool.
+## 6. Streaming Architecture
 
-3.  **Content Assembly:** The final response sent to the client is a list of content blocks. If the model generates both text and tool calls, the response will contain both a `text` block and one or more `tool_use` blocks, just as the Anthropic client expects.
+Each provider has dedicated streaming handlers:
 
-## 5. Streaming
+- **Gemini Streaming:** `src/ccp/streaming/gemini.py` converts GenAI streaming chunks to Anthropic SSE format
+- **OpenAI Streaming:** `src/ccp/streaming/openai.py` converts OpenAI SSE to Anthropic SSE format  
+- **Anthropic Streaming:** `src/ccp/streaming/anthropic.py` provides direct passthrough
 
-The proxy fully supports streaming responses to provide real-time output in the client.
+All streaming implementations emit standard Anthropic events: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, and `message_stop`.
 
-1.  **Initiating Stream:** If the initial request has `stream: true`, the proxy calls LiteLLM's `acompletion` function, which returns an asynchronous generator.
-2.  **Event Translation:** The `handle_streaming` async generator function iterates over the chunks from the LiteLLM response and translates them into Anthropic's server-sent events (SSE) format.
-    - It sends `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, and `message_stop` events to mimic the behavior of Anthropic's native API.
-    - This ensures that text and tool calls appear incrementally in the client, providing a seamless user experience.
+## 7. Configuration
 
-## 6. Configuration
-
-The entire translation process is controlled by variables in the `.env` file:
+The modular architecture is controlled by variables in the `.env` file:
 
 | Variable             | Description                                                              |
 | -------------------- | ------------------------------------------------------------------------ |
-| `PREFERRED_PROVIDER` | The primary backend (`openai` or `google`) for mapping models.           |
-| `BIG_MODEL`          | The model to map `sonnet` requests to (e.g., `gpt-4.1`, `gemini-1.5-pro`). |
-| `SMALL_MODEL`        | The model to map `haiku` requests to (e.g., `gpt-4.1-mini`, `gemini-1.5-flash`). |
-| `OPENAI_API_KEY`     | Your OpenAI API key.                                                     |
-| `GEMINI_API_KEY`     | Your Google AI Studio (Gemini) API key.                                  |
+| `PREFERRED_PROVIDER` | The primary backend (`openai`, `google`, or `anthropic`) for mapping models. |
+| `BIG_MODEL`          | The model to map `sonnet` requests to (e.g., `gpt-4.1`, `gemini-2.0-flash`). |
+| `SMALL_MODEL`        | The model to map `haiku` requests to (e.g., `gpt-4.1-mini`, `gemini-2.0-flash`). |
+| `OPENAI_API_KEY`     | Your OpenAI API key (required for OpenAI models).                       |
+| `GEMINI_API_KEY`     | Your Google AI Studio (Gemini) API key (required for Gemini models).    |
+| `ANTHROPIC_API_KEY`  | Your Anthropic API key (required for Anthropic models).                 |
 | `PORT`               | The port for the proxy server.                                           |
+
+## 8. Benefits of the New Architecture
+
+### 🚀 **Performance**
+- **Reduced Latency:** Direct API calls eliminate LiteLLM abstraction overhead
+- **Native Streaming:** Each provider uses its optimal streaming implementation
+- **Parallel Processing:** Modular handlers can be optimized independently
+
+### 🔧 **Maintainability**
+- **Single Responsibility:** Each module has a focused, clear purpose
+- **Easy Testing:** Individual handlers and conversions can be tested in isolation
+- **Debugging:** Clear separation makes troubleshooting more straightforward
+
+### 🔄 **Extensibility**
+- **Add New Providers:** Simply create new handler/conversion/streaming modules
+- **Provider-Specific Features:** Each handler can leverage unique API capabilities
+- **Future-Proof:** Easy to adapt when APIs change or new features are released
+
+### 🛡️ **Reliability**
+- **Provider Isolation:** Issues with one provider don't affect others
+- **Direct Error Handling:** Native error responses from each API
+- **Reduced Dependencies:** Fewer external packages mean fewer potential failure points
