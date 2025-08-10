@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 import litellm
@@ -7,41 +8,28 @@ import litellm
 # Load environment variables from .env file
 load_dotenv()
 
+# --- Logging Setup ---
+# Per MCP guidelines, log to stderr for stdio transport.
+log_level_str = os.environ.get("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+logging.basicConfig(stream=sys.stderr, level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log = logging.getLogger("ccp_mcp_server")
+
+
 # --- MCP Server Setup ---
-# Read and uppercase the log level to ensure it's valid.
-log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-mcp = FastMCP("claude-code-plus", log_level=log_level)
+mcp = FastMCP("ccp", log_level=log_level_str)
 
 # --- Environment Variable Validation ---
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-if not OPENAI_API_KEY:
-    mcp.log.error("FATAL: OPENAI_API_KEY environment variable not set.")
-    sys.exit(1)
-if not GEMINI_API_KEY:
-    mcp.log.error("FATAL: GEMINI_API_KEY environment variable not set.")
-    sys.exit(1)
-
-# --- Model Mapping ---
-PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
-
-def get_mapped_model(model_alias: str) -> str:
-    """Maps an alias to a full model name based on provider preference."""
-    if 'haiku' in model_alias.lower():
-        return f"gemini/{SMALL_MODEL}" if PREFERRED_PROVIDER == "google" else f"openai/{SMALL_MODEL}"
-    elif 'sonnet' in model_alias.lower():
-        return f"gemini/{BIG_MODEL}" if PREFERRED_PROVIDER == "google" else f"openai/{BIG_MODEL}"
-    # Default to the alias itself if no mapping is found
-    return model_alias
+# The proxy server will validate these, but we can check for the port.
+PORT = os.environ.get("PORT")
+if not PORT:
+    log.warning("PORT environment variable not set. Using default 8082.")
 
 # --- MCP Tool Implementation ---
-@mcp.tool()
-async def run_model(prompt: str, model_alias: str = 'sonnet', system_prompt: str = None) -> str:
+@mcp.tool(name="ccp")
+async def run_ccp_proxy(prompt: str, model_alias: str = 'sonnet', system_prompt: str = None) -> str:
     """
-    Runs a prompt against a specified model alias ('sonnet' or 'haiku').
+    Offloads agentic work to a powerful LLM (like Claude) via the ccp proxy.
 
     Args:
         prompt: The main text prompt to send to the language model.
@@ -49,16 +37,24 @@ async def run_model(prompt: str, model_alias: str = 'sonnet', system_prompt: str
         system_prompt: An optional system message to guide the model's behavior.
     """
     try:
-        model_name = get_mapped_model(model_alias)
-        mcp.log.info(f"Running model '{model_name}' for alias '{model_alias}'")
+        # Get the port from environment variables, with a default
+        port = os.environ.get("PORT", "8082")
+        api_base = f"http://localhost:{port}"
+        
+        log.info(f"Offloading prompt to '{model_alias}' via proxy at {api_base}")
 
         messages = [{"role": "user", "content": prompt}]
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
 
+        # This call goes to the proxy server, which then maps the model
         response = await litellm.acompletion(
-            model=model_name,
+            model=model_alias,
             messages=messages,
+            api_base=api_base,
+            # The proxy needs an API key, but litellm sends a dummy one
+            # if it's not set. The proxy should be configured to ignore it.
+            api_key="dummy-key"
         )
         
         # Extract the response content
@@ -67,7 +63,7 @@ async def run_model(prompt: str, model_alias: str = 'sonnet', system_prompt: str
         return "Error: No content in response."
 
     except Exception as e:
-        mcp.log.error(f"Error running model {model_alias}: {e}")
+        log.error(f"Error running ccp proxy tool: {e}")
         return f"An error occurred: {str(e)}"
 
 # --- Main Execution ---
