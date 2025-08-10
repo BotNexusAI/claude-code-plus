@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 import re
 from datetime import datetime
 import sys
+from google import genai
+from google.genai import types
 
 # Load environment variables from .env file
 load_dotenv()
@@ -91,6 +93,18 @@ if not GEMINI_API_KEY:
     logger.error("FATAL: GEMINI_API_KEY environment variable not set.")
     sys.exit(1)
 
+# Global client instance for Google GenAI
+client = None
+
+try:
+    # The client automatically uses the API key from the environment variables.
+    # The previous use of genai.configure() was incorrect for the current SDK version.
+    client = genai.Client()
+    logger.info("✅ Google GenAI client configured successfully.")
+except Exception as e:
+    logger.error(f"🔥 Failed to configure Google GenAI client: {e}")
+    sys.exit(1)
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
@@ -128,6 +142,7 @@ def clean_gemini_schema(schema: Any) -> Any:
         # Remove specific keys unsupported by Gemini tool parameters
         schema.pop("additionalProperties", None)
         schema.pop("default", None)
+        schema.pop("$schema", None)
         
         # Remove empty description fields, as they can cause issues
         if "description" in schema and not schema["description"]:
@@ -993,12 +1008,356 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         # Send final [DONE] marker
         yield "data: [DONE]\n\n"
 
+def convert_anthropic_to_genai_payload(request: MessagesRequest) -> dict:
+    """Converts an Anthropic MessagesRequest to a Google GenAI API payload."""
+    contents = []
+    system_prompt = None
+
+    # Create a map of tool_use_id to function name for later lookup
+    tool_use_id_to_name = {}
+    for message in request.messages:
+        if message.role == "assistant" and isinstance(message.content, list):
+            for block in message.content:
+                if block.type == "tool_use":
+                    tool_use_id_to_name[block.id] = block.name
+
+    # Extract system prompt
+    if request.system:
+        if isinstance(request.system, str):
+            system_prompt = request.system
+        elif isinstance(request.system, list):
+            system_text = ""
+            for block in request.system:
+                if hasattr(block, 'text'):
+                    system_text += block.text + "\n\n"
+            system_prompt = system_text.strip()
+
+    # Process messages
+    for message in request.messages:
+        role = "user" if message.role == "user" else "model"
+        
+        if isinstance(message.content, str):
+            parts = [types.Part(text=message.content)]
+        else:
+            parts = []
+            for block in message.content:
+                if block.type == "text":
+                    parts.append(types.Part(text=block.text))
+                elif block.type == "tool_use":
+                    # This is an assistant message with a tool call
+                    parts.append(types.Part(
+                        function_call=types.FunctionCall(
+                            name=block.name,
+                            args=block.input
+                        )
+                    ))
+                elif block.type == "tool_result":
+                    # This is a user message with a tool result
+                    parts.append(types.Part(
+                        function_response=types.FunctionResponse(
+                            name=tool_use_id_to_name.get(block.tool_use_id, "unknown_function"),
+                            response={'result': parse_tool_result_content(block.content)}
+                        )
+                    ))
+
+        contents.append(types.Content(role=role, parts=parts))
+
+    # Gemini handles system prompts as the first part of the 'contents'
+    if system_prompt:
+        # Check if the first message is from a user
+        if contents and contents[0].role == 'user':
+            # Prepend system prompt text to the first user message
+            original_text = contents[0].parts[0].text
+            contents[0].parts[0].text = f"{system_prompt}\n\n{original_text}"
+        else:
+            # If no user message is first, insert a new one
+            contents.insert(0, types.Content(role="user", parts=[types.Part(text=system_prompt)]))
+            # We need a model response to follow
+            if len(contents) < 2 or contents[1].role != 'model':
+                 contents.insert(1, types.Content(role="model", parts=[types.Part(text="OK.")]))
+
+
+    # Convert tools
+    genai_tools = []
+    if request.tools:
+        function_declarations = []
+        for tool in request.tools:
+            # The schema cleaning is still relevant
+            cleaned_schema = clean_gemini_schema(tool.input_schema)
+            function_declarations.append(
+                types.FunctionDeclaration(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=cleaned_schema,
+                )
+            )
+        genai_tools.append(types.Tool(function_declarations=function_declarations))
+
+    # Convert tool_choice to tool_config
+    tool_config = None
+    if request.tool_choice:
+        choice_type = request.tool_choice.get("type")
+        if choice_type == "any":
+            tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=types.FunctionCallingConfig.Mode.ANY)
+            )
+        elif choice_type == "auto":
+            tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(mode=types.FunctionCallingConfig.Mode.AUTO)
+            )
+        elif choice_type == "tool":
+            tool_config = types.ToolConfig(
+                function_calling_config=types.FunctionCallingConfig(
+                    mode=types.FunctionCallingConfig.Mode.ANY,
+                    allowed_function_names=[request.tool_choice.get("name")]
+                )
+            )
+
+    # Generation Config
+    # Generation Config
+    generation_config_params = {
+        "max_output_tokens": request.max_tokens,
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "top_k": request.top_k,
+        "stop_sequences": request.stop_sequences,
+    }
+    # Only add tools and tool_config if they exist to avoid Pydantic validation errors
+    if genai_tools:
+        generation_config_params["tools"] = genai_tools
+    if tool_config:
+        generation_config_params["tool_config"] = tool_config
+
+    generation_config = types.GenerationConfig(**generation_config_params)
+
+
+    payload = {
+        "contents": contents,
+        "generation_config": generation_config,
+    }
+
+    return payload
+
+def convert_genai_to_anthropic_response(
+    genai_response: types.GenerateContentResponse,
+    original_request: MessagesRequest
+) -> MessagesResponse:
+    """Converts a Google GenAI response to an Anthropic MessagesResponse."""
+    content = []
+    stop_reason = "end_turn"
+    
+    response_id = f"msg_gemini_{uuid.uuid4()}"
+    
+    # The response from Gemini is in `candidates`
+    if genai_response.candidates:
+        candidate = genai_response.candidates[0]
+        
+        # Map finish reason
+        finish_reason_map = {
+            "STOP": "end_turn",
+            "MAX_TOKENS": "max_tokens",
+            "TOOL_CODE": "tool_use", # Note: Gemini uses TOOL_CODE or FUNCTION_CALL
+            "FUNCTION_CALL": "tool_use",
+            "SAFETY": "end_turn", # Or could be mapped to an error
+            "RECITATION": "end_turn",
+        }
+        stop_reason = finish_reason_map.get(str(candidate.finish_reason), "end_turn")
+
+        # Process content parts
+        for part in candidate.content.parts:
+            if part.text:
+                content.append(ContentBlockText(type="text", text=part.text))
+            
+            if part.function_call:
+                # Generate a unique ID for the tool call for Anthropic
+                tool_call_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                content.append(ContentBlockToolUse(
+                    type="tool_use",
+                    id=tool_call_id,
+                    name=part.function_call.name,
+                    input=part.function_call.args
+                ))
+
+    # If no content was generated (e.g. safety settings), add an empty text block
+    if not content:
+        content.append(ContentBlockText(type="text", text=""))
+
+    # Get usage data
+    input_tokens = 0
+    output_tokens = 0
+    if genai_response.usage_metadata:
+        input_tokens = genai_response.usage_metadata.prompt_token_count
+        output_tokens = genai_response.usage_metadata.candidates_token_count
+
+    usage = Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens
+    )
+
+    return MessagesResponse(
+        id=response_id,
+        model=original_request.original_model or original_request.model,
+        role="assistant",
+        content=content,
+        type="message",
+        stop_reason=stop_reason,
+        usage=usage,
+    )
+
+async def handle_gemini_request(request: MessagesRequest, raw_request: Request):
+    """Handles requests targeted at Google Gemini models using the direct SDK."""
+    try:
+        logger.info(f"➡️ Handling direct Gemini request for model: {request.model}")
+        
+        # 1. Convert the incoming Anthropic request to a GenAI payload
+        payload = convert_anthropic_to_genai_payload(request)
+        
+        # 2. Extract the actual model name (e.g., "gemini-1.5-pro-latest")
+        model_name = request.model.replace("gemini/", "")
+
+        # 3. Handle streaming or non-streaming requests
+        if request.stream:
+            # Use the streaming handler
+            return StreamingResponse(
+                handle_gemini_streaming(model_name, payload, request),
+                media_type="text/event-stream"
+            )
+        else:
+            # Use the standard generate_content method with the new SDK pattern
+            start_time = time.time()
+            
+            # Make the API call using the async client
+            genai_response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=payload["contents"],
+                generation_config=payload["generation_config"],
+            )
+            
+            logger.info(f"✅ Gemini response received in {time.time() - start_time:.2f}s")
+            
+            # 4. Convert the GenAI response back to the Anthropic format
+            anthropic_response = convert_genai_to_anthropic_response(genai_response, request)
+            
+            return anthropic_response
+
+    except Exception as e:
+        import traceback
+        from google.api_core import exceptions as google_exceptions
+
+        error_traceback = traceback.format_exc()
+        error_message = f"🔥 Error in handle_gemini_request: {str(e)}\n{error_traceback}"
+        logger.error(error_message)
+
+        status_code = 500
+        detail = f"An unexpected error occurred: {str(e)}"
+
+        if isinstance(e, google_exceptions.GoogleAPICallError):
+            status_code = e.code or 500
+            detail = f"Google API Error: {e.message}"
+        elif isinstance(e, NotImplementedError):
+             status_code = 501
+             detail = "This feature is not yet implemented for Gemini direct integration."
+
+
+        raise HTTPException(status_code=status_code, detail=detail)
+
+async def handle_gemini_streaming(model_name: str, payload: dict, original_request: MessagesRequest):
+    """Handle streaming responses from Google GenAI and convert to Anthropic SSE format."""
+    try:
+        # Start the streaming call using the new SDK pattern
+        response_generator = await client.aio.models.generate_content_stream(
+            model=model_name,
+            contents=payload["contents"],
+            generation_config=payload["generation_config"],
+        )
+
+        # Send message_start event
+        message_id = f"msg_gemini_{uuid.uuid4().hex[:24]}"
+        message_data = {
+            'type': 'message_start',
+            'message': {
+                'id': message_id,
+                'type': 'message',
+                'role': 'assistant',
+                'model': original_request.original_model or original_request.model,
+                'content': [], 'stop_reason': None, 'stop_sequence': None,
+                'usage': {'input_tokens': 0, 'output_tokens': 0}
+            }
+        }
+        yield f"event: message_start\ndata: {json.dumps(message_data)}\n\n"
+        yield f"event: ping\ndata: {json.dumps({'type': 'ping'})}\n\n"
+
+        content_block_index = 0
+        current_tool_call_id = None
+        
+        async for chunk in response_generator:
+            if not chunk.candidates:
+                continue
+
+            part = chunk.candidates[0].content.parts[0]
+
+            if part.text:
+                if content_block_index == 0: # Assuming first block is always text
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                
+                delta = {'type': 'text_delta', 'text': part.text}
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': content_block_index, 'delta': delta})}\n\n"
+
+            if part.function_call:
+                if current_tool_call_id is None:
+                    # First chunk of a tool call
+                    content_block_index += 1
+                    current_tool_call_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                    tool_use_block = {
+                        'type': 'tool_use',
+                        'id': current_tool_call_id,
+                        'name': part.function_call.name,
+                        'input': {}
+                    }
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': content_block_index, 'content_block': tool_use_block})}\n\n"
+
+                # Stream the arguments
+                delta = {'type': 'input_json_delta', 'partial_json': json.dumps(part.function_call.args)}
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': content_block_index, 'delta': delta})}\n\n"
+
+        # Stop events
+        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': content_block_index})}\n\n"
+        
+        # Final message delta with stop reason and usage
+        # Note: Gemini streaming response does not provide usage data per chunk, so we estimate or leave it at 0
+        usage_data = chunk.usage_metadata if hasattr(chunk, 'usage_metadata') else {'prompt_token_count': 0, 'candidates_token_count': 0}
+        stop_reason = "end_turn" # Default stop reason
+        if chunk.candidates[0].finish_reason:
+             stop_reason = "tool_use" if str(chunk.candidates[0].finish_reason) in ["TOOL_CODE", "FUNCTION_CALL"] else "end_turn"
+
+        message_delta = {
+            'type': 'message_delta',
+            'delta': {'stop_reason': stop_reason, 'stop_sequence': None},
+            'usage': {'output_tokens': usage_data.candidates_token_count}
+        }
+        yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"
+        yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+
+    except Exception as e:
+        logger.error(f"Error in Gemini streaming: {e}")
+        # Yield an error message to the client
+        error_data = {
+            "type": "error",
+            "error": {"type": "internal_server_error", "message": str(e)}
+        }
+        yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+
+
 @app.post("/v1/messages")
 async def create_message(
     request: MessagesRequest,
     raw_request: Request
 ):
     try:
+        # New branching logic
+        if request.model.startswith("gemini/"):
+            return await handle_gemini_request(request, raw_request)
+
         # print the body here
         body = await raw_request.body()
     
