@@ -16,8 +16,17 @@ logger = get_logger(__name__)
 
 async def handle_gemini_request(request: MessagesRequest, raw_request: Request):
     """Handles requests targeted at Google Gemini models using the direct SDK."""
+    global client
     try:
         logger.info(f"➡️ Handling direct Gemini request for model: {request.model}")
+        
+        # Check if client is initialized
+        if client is None:
+            from ..config import setup_config
+            setup_config()
+            # Re-import the client after setup
+            from ..config import client as initialized_client
+            client = initialized_client
         
         # 1. Convert the incoming Anthropic request to a GenAI payload
         payload = convert_anthropic_to_genai_payload(request)
@@ -37,11 +46,31 @@ async def handle_gemini_request(request: MessagesRequest, raw_request: Request):
             start_time = time.time()
             
             # Make the API call using the async client
-            genai_response = await client.aio.models.generate_content(
-                model=model_name,
-                contents=payload["contents"],
-                generation_config=payload["generation_config"],
-            )
+            from google.genai import types
+            
+            # Debug logging
+            logger.info(f"🔍 Payload config_params: {payload.get('config_params', {})}")
+            logger.info(f"🔍 Contents count: {len(payload['contents'])}")
+            
+            # Create the config using the parameters from the conversion
+            config = types.GenerateContentConfig(**payload["config_params"])
+            
+            call_params = {
+                "model": model_name,
+                "contents": payload["contents"],
+                "config": config,
+            }
+            
+            logger.info(f"🔍 Final call_params keys: {list(call_params.keys())}")
+            
+            # Debug: Log the actual contents being sent
+            logger.info(f"🔍 Model name being used: {model_name}")
+            logger.info(f"🔍 Contents structure: {[{'role': c.role, 'parts_count': len(c.parts)} for c in payload['contents']]}")
+            if payload["contents"]:
+                first_content = payload["contents"][0]
+                logger.info(f"🔍 First content parts: {[{'type': type(p).__name__, 'has_text': hasattr(p, 'text')} for p in first_content.parts]}")
+            
+            genai_response = await client.aio.models.generate_content(**call_params)
             
             logger.info(f"✅ Gemini response received in {time.time() - start_time:.2f}s")
             

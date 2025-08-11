@@ -116,27 +116,39 @@ def convert_anthropic_to_genai_payload(request: MessagesRequest) -> dict:
                 )
             )
 
-    # Generation Config
-    generation_config_params = {
-        "max_output_tokens": request.max_tokens,
-        "temperature": request.temperature,
-        "top_p": request.top_p,
-        "top_k": request.top_k,
-        "stop_sequences": request.stop_sequences,
-    }
-    # Only add tools and tool_config if they exist to avoid Pydantic validation errors
-    if genai_tools:
-        generation_config_params["tools"] = genai_tools
+    # Store parameters that will be used to build GenerateContentConfig
+    # Filter out None values to avoid API issues
+    config_params = {}
+    
+    if request.max_tokens is not None:
+        # Gemini might have issues with very low token limits, set a minimum of 10
+        config_params["max_output_tokens"] = max(request.max_tokens, 10)
+    if request.temperature is not None:
+        config_params["temperature"] = request.temperature
+    if request.top_p is not None:
+        config_params["top_p"] = request.top_p
+    if request.top_k is not None:
+        config_params["top_k"] = request.top_k
+    if request.stop_sequences is not None:
+        config_params["stop_sequences"] = request.stop_sequences
+    
+    # Only add tool_config if it exists
     if tool_config:
-        generation_config_params["tool_config"] = tool_config
-
-    generation_config = types.GenerationConfig(**generation_config_params)
+        config_params["tool_config"] = tool_config
+    
+    # Add tools if they exist
+    if genai_tools:
+        config_params["tools"] = genai_tools
 
     payload = {
         "contents": contents,
-        "generation_config": generation_config,
+        "config_params": config_params,
     }
-
+    
+    # Debug logging
+    logger.info(f"🔍 Converted payload - Contents: {len(contents)} messages")
+    logger.info(f"🔍 Config params: {config_params}")
+    
     return payload
 
 def convert_genai_to_anthropic_response(
@@ -164,20 +176,21 @@ def convert_genai_to_anthropic_response(
         }
         stop_reason = finish_reason_map.get(str(candidate.finish_reason), "end_turn")
 
-        # Process content parts
-        for part in candidate.content.parts:
-            if part.text:
-                content.append(ContentBlockText(type="text", text=part.text))
-            
-            if part.function_call:
-                # Generate a unique ID for the tool call for Anthropic
-                tool_call_id = f"toolu_{uuid.uuid4().hex[:24]}"
-                content.append(ContentBlockToolUse(
-                    type="tool_use",
-                    id=tool_call_id,
-                    name=part.function_call.name,
-                    input=part.function_call.args
-                ))
+        # Process content parts - check if content exists
+        if candidate.content and candidate.content.parts:
+            for part in candidate.content.parts:
+                if part.text:
+                    content.append(ContentBlockText(type="text", text=part.text))
+                
+                if part.function_call:
+                    # Generate a unique ID for the tool call for Anthropic
+                    tool_call_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                    content.append(ContentBlockToolUse(
+                        type="tool_use",
+                        id=tool_call_id,
+                        name=part.function_call.name,
+                        input=part.function_call.args
+                    ))
 
     # If no content was generated (e.g. safety settings), add an empty text block
     if not content:
@@ -187,8 +200,8 @@ def convert_genai_to_anthropic_response(
     input_tokens = 0
     output_tokens = 0
     if genai_response.usage_metadata:
-        input_tokens = genai_response.usage_metadata.prompt_token_count
-        output_tokens = genai_response.usage_metadata.candidates_token_count
+        input_tokens = genai_response.usage_metadata.prompt_token_count or 0
+        output_tokens = genai_response.usage_metadata.candidates_token_count or 0
 
     usage = Usage(
         input_tokens=input_tokens,

@@ -5,6 +5,10 @@ Pydantic models for request/response schemas.
 from pydantic import BaseModel, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file before accessing them
+load_dotenv()
 
 # Get configuration for model validation
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
@@ -30,6 +34,8 @@ OPENAI_MODELS = [
 # List of Gemini models
 GEMINI_MODELS = [
     "gemini-2.5-pro-preview-03-25",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
     "gemini-2.0-flash"
 ]
 
@@ -108,32 +114,20 @@ class MessagesRequest(BaseModel):
 
         # Mapping Logic
         mapped = False
-        # Map Haiku to SMALL_MODEL based on provider preference
-        if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google":
+        # Always enforce preferred provider
+        if PREFERRED_PROVIDER == "google":
+            if 'haiku' in clean_v.lower():
                 new_model = f"gemini/{SMALL_MODEL}"
-                mapped = True
             else:
-                new_model = f"openai/{SMALL_MODEL}"
-                mapped = True
-
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{BIG_MODEL}"
-                mapped = True
+            mapped = True
+        elif PREFERRED_PROVIDER == "openai":
+            if 'haiku' in clean_v.lower():
+                new_model = f"openai/{SMALL_MODEL}"
             else:
                 new_model = f"openai/{BIG_MODEL}"
-                mapped = True
-
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-                new_model = f"gemini/{clean_v}"
-                mapped = True
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-                new_model = f"openai/{clean_v}"
-                mapped = True
+            mapped = True
+        # No else, proxy blocks all other providers
 
         if mapped:
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")

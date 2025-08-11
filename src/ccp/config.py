@@ -42,7 +42,7 @@ def initialize_genai_client():
     logger = get_logger(__name__)
     
     try:
-        # The client automatically uses the API key from the environment variables.
+        # The client automatically uses GEMINI_API_KEY from environment
         client = genai.Client()
         logger.info("✅ Google GenAI client configured successfully.")
     except Exception as e:
